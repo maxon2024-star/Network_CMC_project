@@ -1,0 +1,42 @@
+# ==========================================
+# Node.js / React (Application Level)
+# ==========================================
+node_modules/
+build/
+dist/
+.env
+.env.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# Python / FastAPI / ROS 2 (Agent & Transport)
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+# ROS 2 workspaces
+install/
+log/
+build/
+
+# ==========================================
+# Docker & Environment
+# ==========================================
+docker-compose.override.yml
+*.log
+
+# ==========================================
+# IDE & OS Files
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
