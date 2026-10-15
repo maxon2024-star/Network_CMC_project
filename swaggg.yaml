@@ -1,0 +1,1621 @@
+openapi: 3.0.3
+
+info:
+  title: Telemetry 2. CNC Machine Distributed System API
+  description: |-
+    OpenAPI documentation for the distributed real-time telemetry and control system
+    "Telemetry 2. CNC Machine Program".
+
+    ## System overview
+
+    The system consists of three independent levels:
+
+    1. **Application level**
+       - React-based operator terminal.
+       - Provides login, logout, chat/terminal UI and WebSocket communication.
+       - Sends control commands to the machine.
+       - Receives aggregated telemetry and error notifications.
+
+    2. **Transport level**
+       - Receives telemetry segments from the agent level.
+       - Emulates network congestion and packet loss.
+       - Stores accepted segments in a queue.
+       - Aggregates segments every 5 seconds.
+       - Sends aggregated telemetry to the application level using WebSocket.
+
+    3. **Agent level**
+       - Emulates a CNC machine on a 2D surface with Z-axis tool positioning.
+       - Executes commands such as drilling and milling.
+       - Generates telemetry.
+       - Splits telemetry into segments of up to 256 bytes.
+       - Sends segments to the transport level using HTTP.
+
+    ## Coordinate convention
+
+    The coordinate model uses:
+
+    - `x` — horizontal position on the working surface.
+    - `y` — vertical position on the working surface.
+    - `z` — tool height or depth coordinate.
+
+    Recommended convention:
+
+    - `z = 0` corresponds to the reference work surface.
+    - Positive `z` values represent safe height above the surface.
+    - Negative `z` values represent tool penetration below the surface.
+
+    The original technical specification requires a separate `depth` parameter.
+    This parameter is preserved for compatibility with requirement 5.a.iii.
+
+    ## WebSocket limitation
+
+    OpenAPI 3.0 does not fully describe WebSocket frame exchange.
+    Therefore, WebSocket endpoints are described as HTTP upgrade endpoints,
+    while WebSocket message payloads are documented in `components/schemas`.
+
+    For full asynchronous protocol documentation, AsyncAPI may be used as a future extension.
+
+    ## Requirement traceability
+
+    - Application level: clause 5.a
+    - Transport level: clause 5.b
+    - Agent level: clause 5.c
+
+  version: 1.1.0
+  contact:
+    name: Project Team
+    email: team@example.com
+
+tags:
+  - name: Application
+    description: |-
+      Application level endpoints.
+
+      Responsible for operator authentication, session state and WebSocket
+      terminal connection.
+
+  - name: Transport
+    description: |-
+      Transport level endpoints.
+
+      Receives telemetry segments from the agent level, emulates packet loss,
+      queues segments and streams aggregated telemetry to the application level.
+
+  - name: Agent
+    description: |-
+      Agent level endpoints.
+
+      Emulates CNC machine behavior, receives control commands and exposes
+      machine state information.
+
+  - name: Calibration
+    description: |-
+      Calibration endpoints.
+
+      Used to configure or inspect machine coordinate offsets, tool offset and
+      Z-axis reference position.
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Application level server
+
+  - url: http://localhost:8001/api/v1
+    description: Transport level server
+
+  - url: http://localhost:8002/api/v1
+    description: Agent level server
+
+paths:
+
+  /login:
+    post:
+      tags:
+        - Application
+      operationId: applicationLogin
+      summary: Log in an operator
+      description: |-
+        Logs in an operator and prepares the application terminal session.
+
+        The entered username is transmitted with every new WebSocket message
+        as the `sender` field.
+
+        After successful login, the frontend should open a WebSocket connection
+        to the `/ws` endpoint.
+
+      x-requirements:
+        - clause: 5.a.ii
+          description: User enters a name using the Login button.
+        - clause: 5.a.iii
+          description: The username is passed with every new message.
+
+      servers:
+        - url: http://localhost:3000/api/v1
+          description: Application level base URL
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              operatorLogin:
+                summary: Operator login
+                value:
+                  username: operator1
+
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              examples:
+                success:
+                  summary: Successful login
+                  value:
+                    status: ok
+                    username: operator1
+                    wsUrl: ws://localhost:3000/api/v1/ws?username=operator1
+                    sessionId: 9f8a6f4e-1c2b-4c3d-8e9f-abcdef123456
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /logout:
+    post:
+      tags:
+        - Application
+      operationId: applicationLogout
+      summary: Log out the operator
+      description: |-
+        Clears login state and chat state.
+
+        The frontend must close the WebSocket connection after logout.
+        Chat history must not be persisted after page reload.
+
+      x-requirements:
+        - clause: 5.a.vi
+          description: Logout clears chat and login and closes WebSocket.
+
+      servers:
+        - url: http://localhost:3000/api/v1
+          description: Application level base URL
+
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+            examples:
+              operatorLogout:
+                summary: Logout request
+                value:
+                  username: operator1
+
+      responses:
+        '200':
+          description: Logout successful
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+              examples:
+                success:
+                  summary: Successful logout
+                  value:
+                    status: ok
+                    username: operator1
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /session:
+    get:
+      tags:
+        - Application
+      operationId: applicationSession
+      summary: Get current session state
+      description: |-
+        Optional helper endpoint for the frontend.
+
+        Can be used to restore UI state after navigation or to verify whether
+        an operator is currently logged in.
+
+      servers:
+        - url: http://localhost:3000/api/v1
+          description: Application level base URL
+
+      responses:
+        '200':
+          description: Current session information
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+              examples:
+                loggedIn:
+                  summary: Logged-in session
+                  value:
+                    loggedIn: true
+                    username: operator1
+                    expiresAt: '2026-05-01T12:00:00Z'
+                anonymous:
+                  summary: Anonymous session
+                  value:
+                    loggedIn: false
+                    username: null
+                    expiresAt: null
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /ws:
+    get:
+      tags:
+        - Application
+      operationId: applicationWebSocket
+      summary: Application WebSocket endpoint
+      description: |-
+        WebSocket endpoint for the operator terminal.
+
+        ## Message directions
+
+        ### Client -> Server
+        - `WsCommandMessage`
+
+        ### Server -> Client
+        - `WsTelemetryMessage`
+
+        ## Example client command
+
+        ```json
+        {
+          "type": "command",
+          "sender": "operator1",
+          "timestamp": "2026-05-01T10:00:00Z",
+          "payload": {
+            "commandId": "1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11",
+            "operation": "milling",
+            "start": {
+              "x": 0,
+              "y": 0,
+              "z": 5
+            },
+            "end": {
+              "x": 10,
+              "y": 5,
+              "z": -1.5
+            },
+            "depth": 1.5,
+            "safeZ": 5,
+            "durationMs": 4000
+          }
+        }
+        ```
+
+        ## Example server telemetry
+
+        ```json
+        {
+          "type": "telemetry",
+          "sender": "transport-level",
+          "timestamp": "2026-05-01T10:00:05Z",
+          "error": false,
+          "payload": {
+            "commandName": "milling",
+            "position": {
+              "x": 3.2,
+              "y": 1.1,
+              "z": -0.8
+            },
+            "finished": false
+          }
+        }
+        ```
+
+        ## Error behavior
+
+        If telemetry is incomplete because of segment loss on the transport level,
+        the server sends a message with `error = true`.
+
+        Example:
+
+        ```json
+        {
+          "type": "telemetry",
+          "sender": "transport-level",
+          "timestamp": "2026-05-01T10:00:10Z",
+          "error": true,
+          "reason": "Incomplete telemetry segments were received"
+        }
+        ```
+
+        In this case, the frontend must display an error icon and must not
+        display telemetry text.
+
+      x-requirements:
+        - clause: 5.a.ii
+          description: WebSocket connection is opened after login.
+        - clause: 5.a.iii
+          description: Send method transmits command JSON.
+        - clause: 5.a.iv
+          description: Receive method accepts telemetry JSON.
+        - clause: 5.a.v
+          description: Error messages are displayed as error indicators.
+
+      x-websocket-contracts:
+        clientToServer:
+          - schemaRef: '#/components/schemas/WsCommandMessage'
+        serverToClient:
+          - schemaRef: '#/components/schemas/WsTelemetryMessage'
+
+      servers:
+        - url: http://localhost:3000/api/v1
+          description: Application level base URL
+
+      parameters:
+        - name: username
+          in: query
+          required: false
+          description: |-
+            Optional username used during WebSocket handshake.
+
+            Even if this query parameter is present, the username must still be
+            included in every WebSocket message as the `sender` field.
+          schema:
+            type: string
+            example: operator1
+
+      responses:
+        '101':
+          description: Switching Protocols. WebSocket connection established.
+          headers:
+            Upgrade:
+              description: Protocol upgrade header
+              schema:
+                type: string
+                example: websocket
+            Connection:
+              description: Connection upgrade header
+              schema:
+                type: string
+                example: Upgrade
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /segments:
+    post:
+      tags:
+        - Transport
+      operationId: transportReceiveSegment
+      summary: Receive telemetry segment from agent level
+      description: |-
+        Receives a telemetry segment from the agent level.
+
+        The agent level splits telemetry into segments of up to 256 bytes and
+        sends each segment as a separate HTTP request.
+
+        ## Queueing
+
+        Accepted segments are placed into the transport queue.
+
+        ## Congestion simulation
+
+        Before queue insertion, the transport level emulates packet loss:
+
+        - each segment may be dropped with probability 2%;
+        - dropped segments are not placed into the queue.
+
+        ## Segment identity
+
+        The `sentAt` timestamp is used as the message ID.
+
+        ## Segment format
+
+        - `payload`
+        - `sentAt`
+        - `totalSegments`
+        - `segmentNumber`
+
+      x-requirements:
+        - clause: 5.b.i
+          description: HTTP method receives segments and places them into queue.
+        - clause: 5.b.ii
+          description: Artificial packet loss with 2% probability.
+        - clause: 5.b.v
+          description: Segment format includes payload, send time, total length and segment number.
+
+      servers:
+        - url: http://localhost:8001/api/v1
+          description: Transport level base URL
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransportSegment'
+            examples:
+              firstSegment:
+                summary: First segment of three
+                value:
+                  sentAt: '2026-05-01T10:00:00.000Z'
+                  totalSegments: 3
+                  segmentNumber: 1
+                  payload: eyJjb21tYW5kTmFtZSI6Im1pbGxpbmciLCJwb3NpdGlvbiI6eyJ4IjozLjIsInkiOjEuMSwieiI6LTAuOH19
+              secondSegment:
+                summary: Second segment of three
+                value:
+                  sentAt: '2026-05-01T10:00:00.000Z'
+                  totalSegments: 3
+                  segmentNumber: 2
+                  payload: eyJjb21tYW5kTmFtZSI6Im1pbGxpbmciLCJwb3NpdGlvbiI6eyJ4IjozLjQsInkiOjEuMixie iI6LTAuOX19
+              thirdSegment:
+                summary: Third segment of three
+                value:
+                  sentAt: '2026-05-01T10:00:00.000Z'
+                  totalSegments: 3
+                  segmentNumber: 3
+                  payload: eyJjb21tYW5kTmFtZSI6Im1pbGxpbmciLCJwb3NpdGlvbiI6eyJ4IjozLjYsInkiOjEuMywieiI6LTEuMH19
+
+      responses:
+        '202':
+          description: Segment received and placed into queue
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+            X-Message-ID:
+              $ref: '#/components/headers/XMessageId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SegmentAcceptResponse'
+              examples:
+                queued:
+                  summary: Segment queued
+                  value:
+                    messageId: '2026-05-01T10:00:00.000Z'
+                    segmentNumber: 1
+                    queued: true
+                    dropped: false
+                    detail: Segment accepted into transport queue
+
+        '200':
+          description: |-
+            Segment received but intentionally dropped by congestion simulation.
+
+            This response is useful for demonstration and debugging.
+            In a real network, a lost packet may not produce any response.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+            X-Message-ID:
+              $ref: '#/components/headers/XMessageId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SegmentAcceptResponse'
+              examples:
+                dropped:
+                  summary: Segment dropped by congestion simulation
+                  value:
+                    messageId: '2026-05-01T10:00:00.000Z'
+                    segmentNumber: 2
+                    queued: false
+                    dropped: true
+                    detail: Segment dropped by 2% congestion simulation
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /telemetry/stream:
+    get:
+      tags:
+        - Transport
+      operationId: transportTelemetryStream
+      summary: Transport WebSocket telemetry stream
+      description: |-
+        WebSocket endpoint used by the transport level to send aggregated telemetry
+        to the application level.
+
+        ## Aggregation behavior
+
+        - Every 5 seconds, the transport level collects segments from the queue.
+        - Collected segments are assembled into one telemetry message.
+        - The resulting message is sent to the application level.
+
+        ## Incomplete data behavior
+
+        If some segments were not received because of losses, for example when
+        no new segments were received for 1 to 3 cycles, the final aggregated
+        message is sent with `error = true`.
+
+        ## Server -> Client message
+
+        - `WsTelemetryMessage`
+
+      x-requirements:
+        - clause: 5.b.iii
+          description: Segments are aggregated every 5 seconds and sent via WebSocket.
+        - clause: 5.b.iv
+          description: Incomplete data is sent with an error flag.
+
+      x-websocket-contracts:
+        serverToClient:
+          - schemaRef: '#/components/schemas/WsTelemetryMessage'
+
+      servers:
+        - url: http://localhost:8001/api/v1
+          description: Transport level base URL
+
+      parameters:
+        - name: username
+          in: query
+          required: false
+          description: Optional operator name
+          schema:
+            type: string
+            example: operator1
+
+      responses:
+        '101':
+          description: Switching Protocols. WebSocket connection established.
+          headers:
+            Upgrade:
+              description: Protocol upgrade header
+              schema:
+                type: string
+                example: websocket
+            Connection:
+              description: Connection upgrade header
+              schema:
+                type: string
+                example: Upgrade
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /commands:
+    post:
+      tags:
+        - Agent
+      operationId: agentReceiveCommand
+      summary: Send control command to CNC machine emulator
+      description: |-
+        Sends a control command to the agent level.
+
+        The agent level emulates CNC machine execution on a 2D surface with
+        Z-axis tool positioning.
+
+        ## Supported operations
+
+        - `drilling`
+        - `milling`
+
+        ## Coordinate model
+
+        - `start` — initial tool position.
+        - `end` — target tool position.
+        - `depth` — required process depth from the original specification.
+        - `safeZ` — optional safe retraction height.
+
+        After completing the command cycle, the machine returns to the initial
+        position.
+
+      x-requirements:
+        - clause: 5.a.iii
+          description: Command payload includes coordinates, depth and duration.
+        - clause: 5.c.i
+          description: Agent emulates drilling and milling commands.
+
+      servers:
+        - url: http://localhost:8002/api/v1
+          description: Agent level base URL
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCommandEnvelope'
+            examples:
+              millingCommand:
+                summary: Milling command
+                value:
+                  sender: operator1
+                  timestamp: '2026-05-01T10:00:00Z'
+                  payload:
+                    commandId: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
+                    operation: milling
+                    start:
+                      x: 0
+                      y: 0
+                      z: 5
+                    end:
+                      x: 10
+                      y: 5
+                      z: -1.5
+                    depth: 1.5
+                    safeZ: 5
+                    durationMs: 4000
+
+              drillingCommand:
+                summary: Drilling command
+                value:
+                  sender: operator1
+                  timestamp: '2026-05-01T10:01:00Z'
+                  payload:
+                    commandId: 9b2c8f4e-7c1f-4f8a-9f2a-5f6d1f0e4d99
+                    operation: drilling
+                    start:
+                      x: 5
+                      y: 5
+                      z: 5
+                    end:
+                      x: 5
+                      y: 5
+                      z: -3
+                    depth: 3.0
+                    safeZ: 5
+                    durationMs: 1500
+
+      responses:
+        '202':
+          description: Command accepted for execution
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandAccepted'
+              examples:
+                accepted:
+                  summary: Command accepted
+                  value:
+                    status: accepted
+                    commandId: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
+                    acceptedAt: '2026-05-01T10:00:00Z'
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /state:
+    get:
+      tags:
+        - Agent
+      operationId: agentGetState
+      summary: Get current CNC machine state
+      description: |-
+        Returns the current state of the CNC machine emulator.
+
+        This endpoint is useful for debugging, monitoring and UI status panels.
+
+      x-requirements:
+        - clause: 5.c.ii
+          description: Agent generates current command name and cutter position.
+
+      servers:
+        - url: http://localhost:8002/api/v1
+          description: Agent level base URL
+
+      responses:
+        '200':
+          description: Current CNC machine state
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MachineStateResponse'
+              examples:
+                running:
+                  summary: Machine is running
+                  value:
+                    timestamp: '2026-05-01T10:00:05Z'
+                    state: running
+                    telemetry:
+                      commandName: milling
+                      position:
+                        x: 3.2
+                        y: 1.1
+                        z: -0.8
+                      finished: false
+                idle:
+                  summary: Machine is idle
+                  value:
+                    timestamp: '2026-05-01T10:05:00Z'
+                    state: idle
+                    telemetry:
+                      commandName: none
+                      position:
+                        x: 0
+                        y: 0
+                        z: 5
+                      finished: true
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /calibration:
+    post:
+      tags:
+        - Calibration
+        - Agent
+      operationId: agentCalibrate
+      summary: Apply machine calibration
+      description: |-
+        Applies calibration offsets to the CNC machine emulator.
+
+        Calibration can be used to align the machine coordinate system with the
+        work coordinate system and to compensate for tool length or Z-axis offset.
+
+        ## Modes
+
+        - `zero` — reset current work position to zero.
+        - `reference` — apply reference calibration.
+        - `custom` — apply explicitly provided offsets.
+
+        ## Z-axis calibration
+
+        The `z` offset is especially important for depth compensation.
+
+        Example:
+
+        - If the probe reports `z = -0.12`, the machine can compensate this
+          offset during subsequent commands.
+
+      x-requirements:
+        - clause: 5.c.i
+          description: Machine emulation supports command execution and return to initial position.
+        - clause: 5.c.ii
+          description: Telemetry depends on correct coordinate interpretation.
+
+      servers:
+        - url: http://localhost:8002/api/v1
+          description: Agent level base URL
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalibrationRequest'
+            examples:
+              zeroCalibration:
+                summary: Zero calibration
+                value:
+                  mode: zero
+                  workCoordinateSystem: G54
+                  safeZ: 5.0
+                  comment: Set current position as work zero
+
+              customCalibration:
+                summary: Custom offset calibration
+                value:
+                  mode: custom
+                  workCoordinateSystem: G54
+                  toolId: tool-01
+                  safeZ: 5.0
+                  comment: Apply measured tool offset
+                  offsets:
+                    x: 0.0
+                    y: 0.0
+                    z: -0.12
+                    toolLengthOffset: 0.08
+                    workOffset: 0.0
+
+      responses:
+        '200':
+          description: Calibration applied successfully
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalibrationResponse'
+              examples:
+                applied:
+                  summary: Calibration applied
+                  value:
+                    status: applied
+                    calibratedAt: '2026-05-01T09:55:00Z'
+                    workCoordinateSystem: G54
+                    offsets:
+                      x: 0.0
+                      y: 0.0
+                      z: -0.12
+                      toolLengthOffset: 0.08
+                      workOffset: 0.0
+
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /calibration/state:
+    get:
+      tags:
+        - Calibration
+        - Agent
+      operationId: agentGetCalibrationState
+      summary: Get current calibration state
+      description: |-
+        Returns current calibration state of the CNC machine emulator.
+
+        Includes active offsets, tool offset and last calibration timestamp.
+
+      servers:
+        - url: http://localhost:8002/api/v1
+          description: Agent level base URL
+
+      responses:
+        '200':
+          description: Current calibration state
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalibrationState'
+              examples:
+                calibrated:
+                  summary: Machine is calibrated
+                  value:
+                    calibrated: true
+                    lastCalibratedAt: '2026-05-01T09:55:00Z'
+                    workCoordinateSystem: G54
+                    toolId: tool-01
+                    offsets:
+                      x: 0.0
+                      y: 0.0
+                      z: -0.12
+                      toolLengthOffset: 0.08
+                      workOffset: 0.0
+                notCalibrated:
+                  summary: Machine is not calibrated
+                  value:
+                    calibrated: false
+                    lastCalibratedAt: null
+                    workCoordinateSystem: G54
+                    toolId: null
+                    offsets:
+                      x: 0.0
+                      y: 0.0
+                      z: 0.0
+                      toolLengthOffset: 0.0
+                      workOffset: 0.0
+
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+
+  headers:
+    XRequestId:
+      description: Unique request identifier for tracing and debugging
+      schema:
+        type: string
+        example: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
+
+    XMessageId:
+      description: Message identifier. For telemetry segments this is equal to sentAt.
+      schema:
+        type: string
+        example: '2026-05-01T10:00:00.000Z'
+
+  responses:
+    BadRequest:
+      description: Bad request
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalidBody:
+              summary: Invalid request body
+              value:
+                code: BadRequest
+                message: Request body is invalid
+                requestId: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
+                timestamp: '2026-05-01T10:00:00Z'
+                details:
+                  field: username
+                  reason: must not be empty
+
+    Unauthorized:
+      description: Unauthorized
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unauthorized:
+              summary: User is not authenticated
+              value:
+                code: Unauthorized
+                message: Authentication is required
+                requestId: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
+                timestamp: '2026-05-01T10:00:00Z'
+
+    NotFound:
+      description: Resource not found
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              summary: Requested resource was not found
+              value:
+                code: NotFound
+                message: Requested resource was not found
+                requestId: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
+                timestamp: '2026-05-01T10:00:00Z'
+
+    InternalServerError:
+      description: Internal server error
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            serverError:
+              summary: Unexpected server error
+              value:
+                code: InternalServerError
+                message: Unexpected server error occurred
+                requestId: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
+                timestamp: '2026-05-01T10:00:00Z'
+
+  schemas:
+
+    Error:
+      type: object
+      description: Standard API error object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: BadRequest
+        message:
+          type: string
+          description: Human-readable error message
+          example: Request body is invalid
+        requestId:
+          type: string
+          description: Request identifier for tracing
+          example: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+          example: '2026-05-01T10:00:00Z'
+        details:
+          type: object
+          description: Optional error details
+          additionalProperties: true
+
+    Position2D:
+      type: object
+      description: 2D coordinate on the working surface
+      required:
+        - x
+        - y
+      properties:
+        x:
+          type: number
+          format: double
+          description: X coordinate
+          example: 10.5
+        y:
+          type: number
+          format: double
+          description: Y coordinate
+          example: -2.0
+
+    Position3D:
+      description: |-
+        3D coordinate.
+
+        Extends 2D surface coordinates with a Z coordinate.
+        The Z coordinate represents tool height or depth.
+      allOf:
+        - $ref: '#/components/schemas/Position2D'
+        - type: object
+          required:
+            - z
+          properties:
+            z:
+              type: number
+              format: double
+              description: |-
+                Z coordinate.
+
+                Recommended convention:
+                - `z = 0` is the reference work surface.
+                - Positive `z` is safe height above the surface.
+                - Negative `z` is tool penetration below the surface.
+              example: -1.5
+
+    LoginRequest:
+      type: object
+      description: Request body for operator login
+      required:
+        - username
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+          description: Operator name
+          example: operator1
+
+    LoginResponse:
+      type: object
+      description: Login response
+      required:
+        - status
+        - username
+        - wsUrl
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+          example: ok
+        username:
+          type: string
+          example: operator1
+        wsUrl:
+          type: string
+          format: uri
+          description: WebSocket URL for the frontend terminal
+          example: ws://localhost:3000/api/v1/ws?username=operator1
+        sessionId:
+          type: string
+          description: Optional session identifier
+          example: 9f8a6f4e-1c2b-4c3d-8e9f-abcdef123456
+
+    LogoutRequest:
+      type: object
+      description: Optional logout request body
+      properties:
+        username:
+          type: string
+          example: operator1
+
+    LogoutResponse:
+      type: object
+      description: Logout response
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+          example: ok
+        username:
+          type: string
+          example: operator1
+
+    SessionInfo:
+      type: object
+      description: Current session information
+      required:
+        - loggedIn
+      properties:
+        loggedIn:
+          type: boolean
+          example: true
+        username:
+          type: string
+          nullable: true
+          example: operator1
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          example: '2026-05-01T12:00:00Z'
+
+    CommandPayload:
+      type: object
+      description: CNC command payload
+      required:
+        - operation
+        - start
+        - end
+        - depth
+        - durationMs
+      properties:
+        commandId:
+          type: string
+          format: uuid
+          description: Optional unique command identifier
+          example: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
+        operation:
+          type: string
+          description: CNC operation type
+          enum:
+            - drilling
+            - milling
+          example: milling
+        start:
+          $ref: '#/components/schemas/Position3D'
+        end:
+          $ref: '#/components/schemas/Position3D'
+        depth:
+          type: number
+          format: double
+          description: |-
+            Process depth in millimeters.
+
+            Preserved because it is explicitly required by the original
+            technical specification.
+          example: 1.5
+        safeZ:
+          type: number
+          format: double
+          description: Safe Z height for retraction or rapid moves
+          example: 5.0
+        feedRate:
+          type: number
+          format: double
+          description: Optional feed rate
+          example: 120.0
+        spindleSpeed:
+          type: number
+          format: double
+          description: Optional spindle speed
+          example: 8000.0
+        toolId:
+          type: string
+          description: Optional tool identifier
+          example: tool-01
+        units:
+          type: string
+          description: Measurement units
+          enum:
+            - mm
+            - cm
+            - m
+          default: mm
+          example: mm
+        durationMs:
+          type: integer
+          format: int64
+          description: Expected command duration in milliseconds
+          example: 4000
+
+    WsCommandMessage:
+      type: object
+      description: |-
+        WebSocket message sent from the application frontend to the backend
+        when the operator sends a command.
+
+        Corresponds to requirement 5.a.iii.
+      required:
+        - type
+        - sender
+        - timestamp
+        - payload
+      properties:
+        type:
+          type: string
+          enum:
+            - command
+          example: command
+        sender:
+          type: string
+          description: Operator username
+          example: operator1
+        timestamp:
+          type: string
+          format: date-time
+          description: Message send time
+          example: '2026-05-01T10:00:00Z'
+        payload:
+          $ref: '#/components/schemas/CommandPayload'
+
+    TelemetryPayload:
+      type: object
+      description: |-
+        Telemetry payload.
+
+        Contains the current command name and cutter position.
+        The position includes X, Y and Z coordinates.
+      required:
+        - commandName
+        - position
+      properties:
+        commandName:
+          type: string
+          description: Current command name
+          example: milling
+        position:
+          $ref: '#/components/schemas/Position3D'
+        finished:
+          type: boolean
+          description: True if current command cycle is finished
+          example: false
+        cycleStep:
+          type: integer
+          description: Optional current cycle step number
+          example: 3
+        calibrationApplied:
+          type: boolean
+          description: True if calibration offsets were applied to this telemetry frame
+          example: true
+
+    WsTelemetryMessage:
+      type: object
+      description: |-
+        WebSocket telemetry message sent to the application frontend.
+
+        Corresponds to requirements 5.a.iv and 5.a.v.
+
+        If `error` is true, the frontend must show an error icon and must not
+        display telemetry text.
+      required:
+        - type
+        - sender
+        - timestamp
+        - error
+      properties:
+        type:
+          type: string
+          enum:
+            - telemetry
+          example: telemetry
+        sender:
+          type: string
+          description: Sender service name
+          example: transport-level
+        timestamp:
+          type: string
+          format: date-time
+          description: Message send time
+          example: '2026-05-01T10:00:05Z'
+        error:
+          type: boolean
+          description: Error flag
+          example: false
+        payload:
+          description: Telemetry payload. May be absent if error is true.
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/TelemetryPayload'
+        reason:
+          type: string
+          nullable: true
+          description: Optional error reason
+          example: Incomplete telemetry segments were received
+
+    TransportSegment:
+      type: object
+      description: |-
+        Telemetry segment sent from agent level to transport level.
+
+        Corresponds to requirement 5.b.v.
+
+        The payload contains a chunk of telemetry data.
+        The original telemetry message is split into segments of up to 256 bytes.
+
+        If the payload is transmitted as JSON, binary data should be encoded
+        using Base64.
+      required:
+        - sentAt
+        - totalSegments
+        - segmentNumber
+        - payload
+      properties:
+        sentAt:
+          type: string
+          format: date-time
+          description: Send time. Used as the message ID.
+          example: '2026-05-01T10:00:00.000Z'
+        totalSegments:
+          type: integer
+          minimum: 1
+          description: Total number of segments in the original message
+          example: 3
+        segmentNumber:
+          type: integer
+          minimum: 1
+          description: Number of this segment. Numbering starts from 1.
+          example: 1
+        payload:
+          type: string
+          format: byte
+          maxLength: 344
+          description: |-
+            Base64-encoded segment payload.
+
+            The raw payload size must not exceed 256 bytes.
+            Base64 encoding may increase the string length up to approximately 344 characters.
+          example: eyJjb21tYW5kTmFtZSI6Im1pbGxpbmciLCJwb3NpdGlvbiI6eyJ4IjozLjIsInkiOjEuMSwieiI6LTAuOH19
+
+    SegmentAcceptResponse:
+      type: object
+      description: Response for segment acceptance operation
+      required:
+        - messageId
+        - segmentNumber
+        - queued
+      properties:
+        messageId:
+          type: string
+          description: Message ID. Equal to segment sentAt value.
+          example: '2026-05-01T10:00:00.000Z'
+        segmentNumber:
+          type: integer
+          minimum: 1
+          description: Segment number
+          example: 1
+        queued:
+          type: boolean
+          description: True if segment was placed into queue
+          example: true
+        dropped:
+          type: boolean
+          description: True if segment was dropped by congestion simulation
+          default: false
+          example: false
+        detail:
+          type: string
+          description: Optional result description
+          example: Segment accepted into transport queue
+
+    AgentCommandEnvelope:
+      type: object
+      description: |-
+        Command envelope sent to the agent level.
+
+        Contains sender, timestamp and command payload.
+      required:
+        - sender
+        - timestamp
+        - payload
+      properties:
+        sender:
+          type: string
+          description: Command sender
+          example: operator1
+        timestamp:
+          type: string
+          format: date-time
+          description: Command send time
+          example: '2026-05-01T10:00:00Z'
+        payload:
+          $ref: '#/components/schemas/CommandPayload'
+
+    CommandAccepted:
+      type: object
+      description: Response returned when agent accepts a command
+      required:
+        - status
+        - acceptedAt
+      properties:
+        status:
+          type: string
+          enum:
+            - accepted
+          example: accepted
+        commandId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Command identifier
+          example: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
+        acceptedAt:
+          type: string
+          format: date-time
+          description: Command acceptance time
+          example: '2026-05-01T10:00:00Z'
+
+    MachineStateResponse:
+      type: object
+      description: Current CNC machine emulator state
+      required:
+        - timestamp
+        - state
+        - telemetry
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: State timestamp
+          example: '2026-05-01T10:00:05Z'
+        state:
+          type: string
+          description: Machine state
+          enum:
+            - idle
+            - running
+            - error
+          example: running
+        telemetry:
+          $ref: '#/components/schemas/TelemetryPayload'
+
+    CalibrationOffsets:
+      type: object
+      description: Calibration offsets
+      required:
+        - x
+        - y
+        - z
+      properties:
+        x:
+          type: number
+          format: double
+          description: X offset
+          example: 0.0
+        y:
+          type: number
+          format: double
+          description: Y offset
+          example: 0.0
+        z:
+          type: number
+          format: double
+          description: Z offset
+          example: -0.12
+        toolLengthOffset:
+          type: number
+          format: double
+          description: Tool length offset
+          example: 0.08
+        workOffset:
+          type: number
+          format: double
+          description: General work offset
+          example: 0.0
+
+    CalibrationRequest:
+      type: object
+      description: Calibration request
+      required:
+        - mode
+      properties:
+        mode:
+          type: string
+          description: Calibration mode
+          enum:
+            - zero
+            - reference
+            - custom
+          example: custom
+        workCoordinateSystem:
+          type: string
+          description: Work coordinate system identifier
+          example: G54
+        toolId:
+          type: string
+          description: Tool identifier
+          example: tool-01
+        safeZ:
+          type: number
+          format: double
+          description: Safe Z height used during calibration routine
+          example: 5.0
+        comment:
+          type: string
+          description: Optional calibration comment
+          example: Apply measured tool offset
+        offsets:
+          description: |-
+            Calibration offsets.
+
+            Required when mode is `custom`.
+            Optional for `zero` and `reference` modes.
+          allOf:
+            - $ref: '#/components/schemas/CalibrationOffsets'
+
+    CalibrationResponse:
+      type: object
+      description: Calibration result
+      required:
+        - status
+        - calibratedAt
+        - offsets
+      properties:
+        status:
+          type: string
+          description: Calibration result status
+          enum:
+            - applied
+            - started
+            - rejected
+          example: applied
+        calibratedAt:
+          type: string
+          format: date-time
+          description: Calibration timestamp
+          example: '2026-05-01T09:55:00Z'
+        workCoordinateSystem:
+          type: string
+          description: Work coordinate system identifier
+          example: G54
+        offsets:
+          $ref: '#/components/schemas/CalibrationOffsets'
+
+    CalibrationState:
+      type: object
+      description: Current calibration state
+      required:
+        - calibrated
+        - lastCalibratedAt
+        - offsets
+      properties:
+        calibrated:
+          type: boolean
+          description: True if machine is currently calibrated
+          example: true
+        lastCalibratedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last calibration timestamp
+          example: '2026-05-01T09:55:00Z'
+        workCoordinateSystem:
+          type: string
+          description: Work coordinate system identifier
+          example: G54
+        toolId:
+          type: string
+          nullable: true
+          description: Active tool identifier
+          example: tool-01
+        offsets:
+          $ref: '#/components/schemas/CalibrationOffsets'
