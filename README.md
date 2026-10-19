@@ -6,15 +6,16 @@
 | Студент | Роль | Технологический стек |
 | :--- | :--- | :--- |
 | **Бикматов Д.А.** | Прикладной уровень | React, Redux Toolkit, Axios, MUI, Node.js |
-| **Торопыгин А.А.** | Транспортный уровень | Python, Apache Kafka, Docker, WebSocket |
+| **Торопыгин А.А.** | Транспортный уровень | Python, Apache Kafka, Docker, Server-Sent Events |
 | **Задеба М.А.** | Агентный уровень | Python, FastAPI, ROS 2 Humble, Ubuntu 22.04 |
 
 ---
 
 ## 📖 Документация
 * [Техническое задание (ТЗ)](./docs/ТЗ_бикм_заде_торо.docx)
-* [Swagger / OpenAPI 3.0 Спецификация](./docs/openapi.yaml)
-* [Диаграммы последовательности](./docs/diagrams/)
+* [Swagger / OpenAPI 3.0 Спецификация](swaggg.yaml)
+* [Диаграммы](./docs/diagrams/)
+* [Макет Figma](https://figma.com)
 
 ---
 
