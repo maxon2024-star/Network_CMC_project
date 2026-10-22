@@ -15,7 +15,7 @@
 * [Техническое задание (ТЗ)](./docs/ТЗ_бикм_заде_торо.docx)
 * [Swagger / OpenAPI 3.0 Спецификация](swaggg.yaml)
 * [Диаграммы](./docs/diagrams/)
-* [Макет Figma](https://figma.com)
+* [Макет Figma](https://www.figma.com/design/WHbjlyB5kvq62WlxnqVun1/ChPU_maket?node-id=0-1&t=2FhQUtMH7BaQaCVg-1)
 
 ---
 
