@@ -1,0 +1,160 @@
+{
+  "info": {
+    "_postman_id": "598a6128-2395-4688-bea3-b5338dfad409",
+    "name": "Network_CNC_project",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "44662235",
+    "_collection_link": "https://go.postman.co/collection/44662235-598a6128-2395-4688-bea3-b5338dfad409?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "send_segment1",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sentAt\": \"2026-11-17T18:05:00.000Z\",\n  \"totalSegments\": 2,\n  \"segmentNumber\": 1,\n  \"payload\": \"eyJjb21tYW5kTmFtZSI6Im1pbGxpbmciLCJwb3NpdGlvbiI6eyJ4\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8001/api/v1/segments",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8001",
+          "path": [
+            "api",
+            "v1",
+            "segments"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "send_segment2",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sentAt\": \"2026-11-17T18:05:00.000Z\",\n  \"totalSegments\": 2,\n  \"segmentNumber\": 2,\n  \"payload\": \"IjoxMC41LCJ5IjoyMC4wLCJ6IjotMS41fSwiZmluaXNoZWQiOmZhbHNlfQ==\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8001/api/v1/segments",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8001",
+          "path": [
+            "api",
+            "v1",
+            "segments"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "subscribe_SSE",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8001/api/v1/telemetry/stream?username=operator1",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8001",
+          "path": [
+            "api",
+            "v1",
+            "telemetry",
+            "stream"
+          ],
+          "query": [
+            {
+              "key": "username",
+              "value": "operator1"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "send_single_command",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sender\": \"operator1\",\n  \"timestamp\": \"2026-11-18T21:00:00Z\",\n  \"payload\": {\n    \"operation\": \"milling\",\n    \"start\": { \"x\": 10.0, \"y\": 10.0 },\n    \"end\": { \"x\": 40.0, \"y\": 20.0 },\n    \"depth\": 3.0,\n    \"duration\": 6.0\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8002/api/v1/commands",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8002",
+          "path": [
+            "api",
+            "v1",
+            "commands"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "send_batch_commands",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sender\": \"operator1\",\n  \"timestamp\": \"2026-11-18T21:05:00Z\",\n  \"commands\": [\n    {\n      \"operation\": \"drilling\",\n      \"start\": { \"x\": 15.0, \"y\": 15.0 },\n      \"end\": { \"x\": 15.0, \"y\": 15.0 },\n      \"depth\": 5.0,\n      \"duration\": 4.0\n    },\n    {\n      \"operation\": \"milling\",\n      \"start\": { \"x\": 15.0, \"y\": 15.0 },\n      \"end\": { \"x\": 50.0, \"y\": 30.0 },\n      \"depth\": 2.0,\n      \"duration\": 8.0\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8002/api/v1/commands/batch",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8002",
+          "path": [
+            "api",
+            "v1",
+            "commands",
+            "batch"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
