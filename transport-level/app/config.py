@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     loss_probability: float = 0.02
     aggregation_interval_sec: int = 5
     max_missing_cycles: int = 3
+    ping_timeout: float = 5.0
 
     class Config:
         env_file = ".env"

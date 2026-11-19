@@ -29,6 +29,7 @@ class TransportBrokerManager:
         self.producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            linger_ms=0
         )
         await self.producer.start()
 
@@ -87,6 +88,7 @@ class TransportBrokerManager:
                 group_id=settings.kafka_group_id,
                 value_deserializer=lambda m: json.loads(m.decode("utf-8")),
                 auto_offset_reset="latest",
+                fetch_max_wait_ms=20,
             )
             try:
                 await consumer.start()
@@ -94,7 +96,7 @@ class TransportBrokerManager:
                     if not self._running:
                         break
                     if isinstance(msg.value, dict):
-                        self._store_segment(msg.value)
+                        await self._store_segment(msg.value)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -103,8 +105,8 @@ class TransportBrokerManager:
             finally:
                 await consumer.stop()
 
-    def _store_segment(self, data: dict) -> None:
-        """Сохранение входящего сегмента в буфер сборки по идентификатору."""
+    async def _store_segment(self, data: dict) -> None:
+        """Сохранение сегмента в буфер и мгновенная отправка при полной сборке."""
         msg_id = data["sentAt"]
         total = data["totalSegments"]
         num = data["segmentNumber"]
@@ -120,8 +122,29 @@ class TransportBrokerManager:
                 "cycles_missing": 0,
             }
 
-        self.message_buffers[msg_id]["segments"][num] = payload
-        self.message_buffers[msg_id]["cycles_missing"] = 0
+        buf = self.message_buffers[msg_id]
+        buf["segments"][num] = payload
+        buf["cycles_missing"] = 0
+
+        # Если все сегменты пакета получены — собираем и отправляем в SSE сразу
+        if len(buf["segments"]) == total:
+            self.message_buffers.pop(msg_id, None)
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                payload_json = self._assemble_payload(buf["segments"])
+                outgoing = SseTelemetryMessage(
+                    timestamp=now,
+                    error=False,
+                    payload=payload_json,
+                )
+            except Exception:
+                outgoing = SseTelemetryMessage(
+                    timestamp=now,
+                    error=True,
+                    reason="Ошибка декодирования полезных данных сегментов",
+                )
+
+            await self._broadcast(outgoing.model_dump(exclude_none=True))
 
     def _assemble_payload(self, segments: Dict[int, str]) -> dict:
         """Декодирование сегментов из Base64 и сборка исходного JSON."""
@@ -133,7 +156,7 @@ class TransportBrokerManager:
         return json.loads(combined_bytes.decode("utf-8"))
 
     async def _aggregation_loop(self) -> None:
-        """Периодическая проверка буферов и формирование итоговых пакетов."""
+        """Периодическая проверка буферов на потерю сегментов по таймауту."""
         while self._running:
             try:
                 await asyncio.sleep(settings.aggregation_interval_sec)
@@ -141,30 +164,10 @@ class TransportBrokerManager:
                 break
 
             now = datetime.now(timezone.utc).isoformat()
-            completed_ids = []
+            expired_ids = []
 
             for msg_id, buf in list(self.message_buffers.items()):
-                received_count = len(buf["segments"])
-                total = buf["total"]
-
-                if received_count == total:
-                    try:
-                        payload_json = self._assemble_payload(buf["segments"])
-                        outgoing = SseTelemetryMessage(
-                            timestamp=now,
-                            error=False,
-                            payload=payload_json,
-                        )
-                    except Exception:
-                        outgoing = SseTelemetryMessage(
-                            timestamp=now,
-                            error=True,
-                            reason="Ошибка декодирования полезных данных сегментов",
-                        )
-
-                    await self._broadcast(outgoing.model_dump(exclude_none=True))
-                    completed_ids.append(msg_id)
-                else:
+                if len(buf["segments"]) < buf["total"]:
                     buf["cycles_missing"] += 1
                     if buf["cycles_missing"] >= settings.max_missing_cycles:
                         error_msg = SseTelemetryMessage(
@@ -173,9 +176,9 @@ class TransportBrokerManager:
                             reason="Incomplete telemetry segments were received",
                         )
                         await self._broadcast(error_msg.model_dump(exclude_none=True))
-                        completed_ids.append(msg_id)
+                        expired_ids.append(msg_id)
 
-            for msg_id in completed_ids:
+            for msg_id in expired_ids:
                 self.message_buffers.pop(msg_id, None)
 
 

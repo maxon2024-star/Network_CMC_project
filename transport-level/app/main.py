@@ -82,21 +82,34 @@ async def receive_segment(segment: TransportSegment):
 
 
 @app.get("/api/v1/telemetry/stream")
-async def telemetry_stream(username: str = "operator1"):
+async def telemetry_stream(username: str = "operator"):
     """Потоковая передача агрегированной телеметрии по протоколу SSE."""
 
     async def event_generator():
         queue = broker_manager.register_client()
         try:
+            yield {
+                "event": "ping",
+                "data": json.dumps({"type": "ping"}),
+            }
             while True:
-                message = await queue.get()
-                yield {
-                    "event": "telemetry",
-                    "data": json.dumps(message, ensure_ascii=False),
-                }
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=settings.ping_timeout)
+                    yield {
+                        "event": "telemetry",
+                        "data": json.dumps(message, ensure_ascii=False),
+                    }
+                except asyncio.TimeoutError:
+                    yield {
+                        "event": "ping",
+                        "data": json.dumps({"type": "ping"}),
+                    }
         except asyncio.CancelledError:
             raise
         finally:
             broker_manager.unregister_client(queue)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        ping=10000,
+    )
