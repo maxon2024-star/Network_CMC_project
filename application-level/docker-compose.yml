@@ -1,0 +1,13 @@
+services:
+  application-service:
+    build: .
+    container_name: application-service
+    ports:
+      - "3000:80"
+    environment:
+      PROXY_TRANSPORT_URL: ${DOCKER_TRANSPORT_URL:-http://host.docker.internal:8001}
+      PROXY_AGENT_URL: ${DOCKER_AGENT_URL:-http://host.docker.internal:8002}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    
