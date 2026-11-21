@@ -1,383 +1,48 @@
 openapi: 3.0.3
-
 info:
-  title: Телеметрия 2. Распределенная система станка с ЧПУ
-  description: |-
-    Документация OpenAPI для распределенной системы телеметрии и управления в реальном времени
-    «Телеметрия 2. Программа станка с ЧПУ».
-
-    ## Обзор системы
-
-    Система состоит из трех независимых уровней:
-
-    1. **Прикладной уровень**
-       - Терминал оператора на базе React.
-       - Обеспечивает вход, выход, интерфейс чата/терминала и связь через Server-Sent Events (SSE).
-       - Отправляет управляющие команды станку.
-       - Получает агрегированную телеметрию и уведомления об ошибках через SSE.
-
-    2. **Транспортный уровень**
-       - Получает сегменты телеметрии от агентного уровня.
-       - Эмулирует сетевую нагрузку и потерю пакетов.
-       - Сохраняет принятые сегменты в очередь.
-       - Агрегирует сегменты каждые 5 секунд.
-       - Передает агрегированную телеметрию на прикладной уровень с помощью SSE.
-
-    3. **Агентный уровень**
-       - Эмулирует станок с ЧПУ на 2D-поверхности с позиционированием инструмента по оси Z.
-       - Выполняет такие команды, как сверление (drilling) и фрезеровка (milling).
-       - Генерирует телеметрию.
-       - Разбивает телеметрию на сегменты размером до 256 байт.
-       - Отправляет сегменты на транспортный уровень по HTTP.
-
-    ## Соглашение о координатах
-
-    Координатная модель использует:
-
-    - `x` — горизонтальное положение на рабочей поверхности.
-    - `y` — вертикальное положение на рабочей поверхности.
-    - `z` — высота или глубина погружения инструмента.
-
-    Рекомендуемое соглашение:
-
-    - `z = 0` соответствует базовой рабочей поверхности.
-    - Положительные значения `z` представляют безопасную высоту над поверхностью.
-    - Отрицательные значения `z` представляют погружение инструмента ниже поверхности.
-
-  version: 1.2.0
-
-tags:
-  - name: Application
-    description: |-
-      Эндпоинты прикладного уровня.
-
-      Отвечают за аутентификацию оператора, состояние сессии и SSE-соединение
-      с терминалом для получения телеметрии.
-
-  - name: Transport
-    description: |-
-      Эндпоинты транспортного уровня.
-
-      Получают сегменты телеметрии от агентного уровня, эмулируют потерю пакетов,
-      ставит сегменты в очередь и передают агрегированную телеметрию по SSE на прикладной уровень.
-
-  - name: Agent
-    description: |-
-      Эндпоинты агентного уровня.
-
-      Эмулируют поведение станка с ЧПУ, принимают управляющие команды и предоставляют
-      информацию о текущем состоянии станка.
-
-  - name: Calibration
-    description: |-
-      Эндпоинты калибровки.
-
-      Используются для настройки или проверки смещений координат станка, смещения инструмента
-      и базового положения по оси Z.
+  title: Distributed CNC Control System API
+  version: 2.0.0
+  description: >
+    Спецификация межсервисного взаимодействия распределённой системы управления
+    станком с ЧПУ (Application Level, Agent Level, Transport Level).
 
 servers:
-  - url: http://localhost:3000/api/v1
-    description: Сервер прикладного уровня
+  - url: http://localhost:3000
+    description: Прикладной уровень (Node.js App Server & SSE Broker)
+  - url: http://localhost:8002
+    description: Агентный уровень (FastAPI + ROS 2 CNC Emulator)
+  - url: http://localhost:8001
+    description: Транспортный уровень (FastAPI + Kafka Assembler)
 
-  - url: http://localhost:8001/api/v1
-    description: Сервер транспортного уровня
-
-  - url: http://localhost:8002/api/v1
-    description: Сервер агентного уровня
+tags:
+  - name: Application Level
+    description: Валидация команд, приём агрегированной телеметрии и SSE-стриминг в браузер
+  - name: Agent Level
+    description: Постановка управляющих программ в очередь станка с ЧПУ
+  - name: Transport Level
+    description: Приём сегментов телеметрии и эмуляция сетевых потерь
 
 paths:
-
-  /login:
+  /api/v1/commands:
     post:
       tags:
-        - Application
-      operationId: applicationLogin
-      summary: Вход оператора в систему
-      description: |-
-        Выполняет вход оператора и подготавливает сессию терминала приложения.
-
-        Введенное имя пользователя передается с каждым новым сообщением команды
-        в поле `sender`.
-
-        После успешного входа фронтенд должен открыть SSE-соединение
-        к эндпоинту `/sse` для получения потока телеметрии.
-
-      x-requirements:
-        - clause: 5.a.ii
-          description: Пользователь вводит имя с помощью кнопки «Войти».
-        - clause: 5.a.iii
-          description: Имя пользователя передается с каждым новым сообщением.
-
-      servers:
-        - url: http://localhost:3000/api/v1
-          description: Базовый URL прикладного уровня
-
+        - Application Level
+        - Agent Level
+      summary: Отправка управляющей программы (сырой ввод на App Server / одиночная команда на Agent)
+      description: >
+        На прикладном уровне (:3000) принимает сырой текст или JSON от UI, выполняет валидацию
+        синтаксиса и границ рабочей зоны, после чего пересылает на :8002 (/commands или /commands/batch).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/LoginRequest'
-            examples:
-              operatorLogin:
-                summary: Вход оператора
-                value:
-                  username: operator1
-
-      responses:
-        '200':
-          description: Успешный вход
-          headers:
-            X-Request-ID:
-              $ref: '#/components/headers/XRequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginResponse'
-              examples:
-                success:
-                  summary: Успешная авторизация
-                  value:
-                    status: ok
-                    username: operator1
-                    sseUrl: http://localhost:3000/api/v1/sse?username=operator1
-                    sessionId: 9f8a6f4e-1c2b-4c3d-8e9f-abcdef123456
-
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /logout:
-    post:
-      tags:
-        - Application
-      operationId: applicationLogout
-      summary: Выход оператора из системы
-      description: |-
-        Очищает состояние входа и чата.
-
-        Фронтенд должен закрыть SSE-соединение после выхода.
-        История чата не должна сохраняться после перезагрузки страницы.
-
-      x-requirements:
-        - clause: 5.a.vi
-          description: Выход очищает чат, логин и закрывает SSE-соединение.
-
-      servers:
-        - url: http://localhost:3000/api/v1
-          description: Базовый URL прикладного уровня
-
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LogoutRequest'
-            examples:
-              operatorLogout:
-                summary: Запрос выхода
-                value:
-                  username: operator1
-
-      responses:
-        '200':
-          description: Успешный выход
-          headers:
-            X-Request-ID:
-              $ref: '#/components/headers/XRequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LogoutResponse'
-              examples:
-                success:
-                  summary: Успешный выход
-                  value:
-                    status: ok
-                    username: operator1
-
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /session:
-    get:
-      tags:
-        - Application
-      operationId: applicationSession
-      summary: Получить состояние текущей сессии
-      description: |-
-        Вспомогательный эндпоинт для фронтенда.
-
-        Может использоваться для восстановления состояния UI после навигации
-        или для проверки того, вошел ли оператор в систему в данный момент.
-
-      servers:
-        - url: http://localhost:3000/api/v1
-          description: Базовый URL прикладного уровня
-
-      responses:
-        '200':
-          description: Информация о текущей сессии
-          headers:
-            X-Request-ID:
-              $ref: '#/components/headers/XRequestId'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SessionInfo'
-              examples:
-                loggedIn:
-                  summary: Сессия активна
-                  value:
-                    loggedIn: true
-                    username: operator1
-                    expiresAt: '2026-05-01T12:00:00Z'
-                anonymous:
-                  summary: Анонимная сессия
-                  value:
-                    loggedIn: false
-                    username: null
-                    expiresAt: null
-
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /sse:
-    get:
-      tags:
-        - Application
-      operationId: applicationSSEStream
-      summary: SSE-эндпоинт прикладного уровня
-      description: |-
-        SSE-эндпоинт для терминала оператора для получения телеметрии и результатов команд.
-
-        ## Структура потока событий
-
-        Соединение остается открытым и передает фреймы формата `text/event-stream`.
-
-        ### Типы событий
-        - `telemetry` (содержит `SseTelemetryMessage`)
-        - `command_ack` (содержит статус команды)
-
-        ## Пример серверного события телеметрии
-
-        ```text
-        event: telemetry
-        data: {"type": "telemetry", "sender": "transport-level", "timestamp": "2026-05-01T10:00:05Z", "error": false, "payload": {"commandName": "milling", "position": {"x": 3.2, "y": 1.1, "z": -0.8}, "finished": false}}
-        ```
-
-        ## Поведение при ошибках
-
-        Если телеметрия неполная из-за потери сегментов на транспортном уровне,
-        сервер отправляет событие с флагом `error = true`.
-
-        Пример:
-
-        ```text
-        event: telemetry
-        data: {"type": "telemetry", "sender": "transport-level", "timestamp": "2026-05-01T10:00:10Z", "error": true, "reason": "Incomplete telemetry segments were received"}
-        ```
-
-        В этом случае фронтенд должен отобразить значок ошибки и не должен
-        выводить текст телеметрии.
-
-      x-requirements:
-        - clause: 5.a.ii
-          description: SSE-соединение открывается после входа (вместо WebSocket).
-        - clause: 5.a.iv
-          description: Метод приема принимает JSON телеметрии через SSE.
-        - clause: 5.a.v
-          description: Сообщения об ошибках отображаются как индикаторы ошибок.
-
-      servers:
-        - url: http://localhost:3000/api/v1
-          description: Базовый URL прикладного уровня
-
-      parameters:
-        - name: username
-          in: query
-          required: false
-          description: Необязательное имя пользователя, используемое при установке SSE-соединения.
-          schema:
-            type: string
-            example: operator1
-
-      responses:
-        '200':
-          description: Поток SSE успешно установлен.
-          headers:
-            Content-Type:
-              description: Тип содержимого потока событий
-              schema:
-                type: string
-                example: text/event-stream
-            Cache-Control:
-              description: Запрет кеширования
-              schema:
-                type: string
-                example: no-cache
-            Connection:
-              description: Поддержание соединения активным
-              schema:
-                type: string
-                example: keep-alive
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: Поток блоков данных в формате SSE
-                example: "event: telemetry\ndata: {...}\n\n"
-
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /commands:
-    post:
-      tags:
-        - Application
-      operationId: applicationSendCommand
-      summary: Отправить управляющую команду в систему
-      description: |-
-        Отправляет управляющую команду из фронтенд-приложения для маршрутизации на агент.
-      servers:
-        - url: http://localhost:3000/api/v1
-          description: Базовый URL прикладного уровня
-
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CommandPayload'
-            examples:
-              millingCommand:
-                summary: Команда фрезеровки
-                value:
-                  commandId: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
-                  operation: milling
-                  start:
-                    x: 0
-                    y: 0
-                    z: 5
-                  end:
-                    x: 10
-                    y: 5
-                    z: -1.5
-                  depth: 1.5
-                  safeZ: 5
-                  durationMs: 4000
-
+              oneOf:
+                - $ref: '#/components/schemas/RawCommandSubmitRequest'
+                - $ref: '#/components/schemas/SingleAgentCommandRequest'
       responses:
         '202':
-          description: Команда принята и поставлена в очередь для передачи
+          description: Команда принята в обработку
           content:
             application/json:
               schema:
@@ -386,496 +51,294 @@ paths:
                   status:
                     type: string
                     example: accepted
-
+                  operationsCount:
+                    type: integer
+                    example: 1
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
+          description: Ошибка валидации синтаксиса или выхода за рабочую область
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Агентный уровень недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
-  /segments:
+  /api/v1/commands/batch:
     post:
       tags:
-        - Transport
-      operationId: transportReceiveSegment
-      summary: Получить сегмент телеметрии от агентного уровня
-      description: |-
-        Получает сегмент телеметрии от агентного уровня.
+        - Agent Level
+      summary: Пакетная постановка списка операций в очередь станка (Agent Level :8002)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchAgentCommandRequest'
+      responses:
+        '202':
+          description: Пакет команд принят в очередь станка
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: accepted
+                  queuedCount:
+                    type: integer
+                    example: 3
 
-        Агентный уровень разбивает телеметрию на сегменты размером до 256 байт и
-        отправляет каждый сегмент отдельным HTTP-запросом.
+  /api/v1/telemetry:
+    post:
+      tags:
+        - Application Level
+      summary: Приём собранного состояния станка или ошибки сегментации от транспортного уровня (:3000)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SseTelemetryMessage'
+      responses:
+        '202':
+          description: Сообщение принято и отправлено подключённым SSE-клиентам
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: accepted
+                  clients:
+                    type: integer
+                    example: 1
+        '400':
+          description: Некорректный JSON в теле запроса
 
-        ## Очередь
+  /api/v1/telemetry/stream:
+    get:
+      tags:
+        - Application Level
+      summary: Подписка браузера на SSE-поток телеметрии и пингов (:3000)
+      parameters:
+        - name: username
+          in: query
+          required: true
+          schema:
+            type: string
+            example: operator1
+      responses:
+        '200':
+          description: Поток событий Server-Sent Events (event telemetry и event ping каждые 1.5 с)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: ping
+                  data: {"type":"ping"}
 
-        Принятые сегменты помещаются в транспортную очередь (Kafka).
+                  event: telemetry
+                  data: {"timestamp":"2026-11-21T00:15:00Z","error":false,"payload":{"commandName":"drilling","position":{"x":120,"y":80,"z":-5},"finished":false}}
 
-        ## Эмуляция нагрузки (потери пакетов)
-
-        Перед помещением в очередь транспортный уровень эмулирует потерю пакетов:
-        - каждый сегмент может быть отброшен с вероятностью 2%;
-        - отброшенные сегменты не попадают в очередь.
-
-      x-requirements:
-        - clause: 5.b.i
-          description: HTTP-метод получает сегменты и помещает их в очередь.
-        - clause: 5.b.ii
-          description: Искусственная потеря пакетов с вероятностью 2%.
-        - clause: 5.b.v
-          description: Формат сегмента включает полезную нагрузку, время отправки, общую длину и номер сегмента.
-
-      servers:
-        - url: http://localhost:8001/api/v1
-          description: Базовый URL транспортного уровня
-
+  /api/v1/segments:
+    post:
+      tags:
+        - Transport Level
+      summary: Приём одного сегмента телеметрии (<= 256 Б) от агентного уровня (:8001)
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/TransportSegment'
-
       responses:
         '202':
-          description: Сегмент получен и помещен в очередь
+          description: Сегмент принят и помещён в очередь Kafka
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SegmentAcceptResponse'
-
         '200':
-          description: Сегмент получен, но отброшен симулятором потерь.
+          description: Сегмент отброшен симулятором сетевых потерь (вероятность 2%)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SegmentAcceptResponse'
-
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /telemetry/stream:
-    get:
-      tags:
-        - Transport
-      operationId: transportTelemetryStream
-      summary: SSE-поток телеметрии транспортного уровня
-      description: |-
-        SSE-эндпоинт, используемый транспортным уровнем для отправки агрегированной телеметрии
-        на прикладной уровень.
-
-        ## Поведение агрегации
-
-        - Каждые 5 секунд транспортный уровень забирает сегменты из очереди.
-        - Собранные сегменты собираются в одно сообщение телеметрии.
-        - Полученное сообщение отправляется на прикладной уровень через SSE.
-
-        ## Поведение при неполных данных
-
-        Если некоторые сегменты не были получены из-за потерь (отсутствие новых данных от 1 до 3 циклов),
-        финальное агрегированное сообщение отправляется с флагом `error = true`.
-
-      x-requirements:
-        - clause: 5.b.iii
-          description: Сегменты агрегируются каждые 5 секунд и отправляются по SSE.
-        - clause: 5.b.iv
-          description: Неполные данные отправляются с флагом ошибки.
-
-      servers:
-        - url: http://localhost:8001/api/v1
-          description: Базовый URL транспортного уровня
-
-      parameters:
-        - name: username
-          in: query
-          required: false
-          description: Необязательное имя оператора
-          schema:
-            type: string
-            example: operator1
-
-      responses:
-        '200':
-          description: SSE-поток установлен.
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                example: "event: telemetry\ndata: {...}\n\n"
-
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /agent/commands:
-    post:
-      tags:
-        - Agent
-      operationId: agentReceiveCommand
-      summary: Отправить управляющую команду эмулятору станка с ЧПУ
-      description: |-
-        Отправляет управляющую команду на агентный уровень.
-      servers:
-        - url: http://localhost:8002/api/v1
-          description: Базовый URL агентного уровня
-
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AgentCommandEnvelope'
-
-      responses:
-        '202':
-          description: Команда принята к исполнению
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CommandAccepted'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /state:
-    get:
-      tags:
-        - Agent
-      operationId: agentGetState
-      summary: Получить текущее состояние станка с ЧПУ
-      servers:
-        - url: http://localhost:8002/api/v1
-          description: Базовый URL агентного уровня
-      responses:
-        '200':
-          description: Текущее состояние станка с ЧПУ
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MachineStateResponse'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
+          description: Номер сегмента превышает totalSegments
 
 components:
-
-  headers:
-    XRequestId:
-      description: Уникальный идентификатор запроса для отладки
-      schema:
-        type: string
-        example: 7d9f1d2e-5b7c-4c3a-9f1e-8a2b3c4d5e6f
-
-  responses:
-    BadRequest:
-      description: Неверный запрос
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-
-    InternalServerError:
-      description: Внутренняя ошибка сервера
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-
   schemas:
-
-    Error:
+    Coordinates2D:
       type: object
-      required:
-        - code
-        - message
-      properties:
-        code:
-          type: string
-          example: BadRequest
-        message:
-          type: string
-          example: Тело запроса некорректно
-
-    Position2D:
-      type: object
-      required:
-        - x
-        - y
+      required: [x, y]
       properties:
         x:
           type: number
-          format: double
-          example: 10.5
+          minimum: 0
+          maximum: 1000
+          example: 120
         y:
           type: number
-          format: double
-          example: -2.0
+          minimum: 0
+          maximum: 1000
+          example: 80
 
-    Position3D:
-      allOf:
-        - $ref: '#/components/schemas/Position2D'
-        - type: object
-          required:
-            - z
-          properties:
-            z:
-              type: number
-              format: double
-              example: -1.5
-
-    LoginRequest:
+    Coordinates3D:
       type: object
-      required:
-        - username
+      required: [x, y, z]
       properties:
-        username:
-          type: string
-          example: operator1
+        x:
+          type: number
+          example: 120
+        y:
+          type: number
+          example: 80
+        z:
+          type: number
+          example: -5
 
-    LoginResponse:
+    CncOperation:
       type: object
-      required:
-        - status
-        - username
-        - sseUrl
+      required: [operation, start, end, depth, duration]
       properties:
-        status:
-          type: string
-          enum:
-            - ok
-          example: ok
-        username:
-          type: string
-          example: operator1
-        sseUrl:
-          type: string
-          format: uri
-          example: http://localhost:3000/api/v1/sse?username=operator1
-        sessionId:
-          type: string
-          example: 9f8a6f4e-1c2b-4c3d-8e9f-abcdef123456
-
-    LogoutRequest:
-      type: object
-      properties:
-        username:
-          type: string
-          example: operator1
-
-    LogoutResponse:
-      type: object
-      required:
-        - status
-      properties:
-        status:
-          type: string
-          example: ok
-        username:
-          type: string
-          example: operator1
-
-    SessionInfo:
-      type: object
-      required:
-        - loggedIn
-      properties:
-        loggedIn:
-          type: boolean
-          example: true
-        username:
-          type: string
-          nullable: true
-          example: operator1
-        expiresAt:
-          type: string
-          format: date-time
-          nullable: true
-          example: '2026-05-01T12:00:00Z'
-
-    CommandPayload:
-      type: object
-      required:
-        - operation
-        - start
-        - end
-        - depth
-        - durationMs
-      properties:
-        commandId:
-          type: string
-          format: uuid
-          example: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
         operation:
           type: string
-          enum:
-            - drilling
-            - milling
-          example: milling
+          enum: [drilling, milling]
         start:
-          $ref: '#/components/schemas/Position3D'
+          $ref: '#/components/schemas/Coordinates2D'
         end:
-          $ref: '#/components/schemas/Position3D'
+          $ref: '#/components/schemas/Coordinates2D'
         depth:
           type: number
-          format: double
-          example: 1.5
-        safeZ:
+          exclusiveMinimum: 0
+          maximum: 100
+          example: 5
+        duration:
           type: number
-          format: double
-          example: 5.0
-        durationMs:
-          type: integer
-          format: int64
-          example: 4000
+          exclusiveMinimum: 0
+          maximum: 3600
+          example: 2.5
 
-    TelemetryPayload:
+    RawCommandSubmitRequest:
       type: object
-      required:
-        - commandName
-        - position
+      required: [sender, rawInput]
       properties:
-        commandName:
-          type: string
-          example: milling
-        position:
-          $ref: '#/components/schemas/Position3D'
-        finished:
-          type: boolean
-          example: false
-
-    SseTelemetryMessage:
-      type: object
-      required:
-        - type
-        - sender
-        - timestamp
-        - error
-      properties:
-        type:
-          type: string
-          enum:
-            - telemetry
-          example: telemetry
         sender:
           type: string
-          example: transport-level
+          example: operator1
+        rawInput:
+          type: string
+          example: "D 120 80 5 2.5"
+
+    SingleAgentCommandRequest:
+      type: object
+      required: [sender, timestamp, payload]
+      properties:
+        sender:
+          type: string
+          example: operator1
         timestamp:
           type: string
           format: date-time
-          example: '2026-05-01T10:00:05Z'
-        error:
-          type: boolean
-          example: false
         payload:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/TelemetryPayload'
-        reason:
+          $ref: '#/components/schemas/CncOperation'
+
+    BatchAgentCommandRequest:
+      type: object
+      required: [sender, timestamp, commands]
+      properties:
+        sender:
           type: string
-          nullable: true
-          example: Incomplete telemetry segments were received
+          example: operator1
+        timestamp:
+          type: string
+          format: date-time
+        commands:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CncOperation'
 
     TransportSegment:
       type: object
-      required:
-        - sentAt
-        - totalSegments
-        - segmentNumber
-        - payload
+      required: [sentAt, sender, totalSegments, segmentNumber, payload]
       properties:
         sentAt:
           type: string
           format: date-time
-          example: '2026-05-01T10:00:00.000Z'
+        sender:
+          type: string
+          example: cnc-agent
         totalSegments:
           type: integer
           minimum: 1
-          example: 3
+          example: 1
         segmentNumber:
           type: integer
           minimum: 1
           example: 1
         payload:
           type: string
-          format: byte
-          example: eyJjb21tYW5kTmFtZSI6Im1pbGxpbmciLCJwb3NpdGlvbiI6eyJ4IjozLjIsInkiOjEuMSwieiI6LTAuOH19
+          description: Фрагмент исходного JSON (<= 256 байт), закодированный в Base64
+          example: eyJjb21tYW5kTmFtZSI6ImRyaWxsaW5nIn0=
 
     SegmentAcceptResponse:
       type: object
-      required:
-        - messageId
-        - segmentNumber
-        - queued
+      required: [messageId, segmentNumber, queued, dropped, detail]
       properties:
         messageId:
           type: string
-          example: '2026-05-01T10:00:00.000Z'
         segmentNumber:
           type: integer
-          example: 1
         queued:
           type: boolean
-          example: true
         dropped:
           type: boolean
-          default: false
-          example: false
-
-    AgentCommandEnvelope:
-      type: object
-      required:
-        - sender
-        - timestamp
-        - payload
-      properties:
-        sender:
+        detail:
           type: string
-          example: operator1
+
+    TelemetryPayload:
+      type: object
+      required: [commandName, position, finished]
+      properties:
+        commandName:
+          type: string
+          enum: [idle, retract, positioning, plunge, drilling, milling, return_home]
+        position:
+          $ref: '#/components/schemas/Coordinates3D'
+        finished:
+          type: boolean
+
+    SseTelemetryMessage:
+      type: object
+      required: [timestamp, error]
+      properties:
         timestamp:
           type: string
           format: date-time
-          example: '2026-05-01T10:00:00Z'
-        payload:
-          $ref: '#/components/schemas/CommandPayload'
-
-    CommandAccepted:
-      type: object
-      required:
-        - status
-        - acceptedAt
-      properties:
-        status:
+        error:
+          type: boolean
+        reason:
           type: string
-          enum:
-            - accepted
-          example: accepted
-        commandId:
-          type: string
-          format: uuid
           nullable: true
-          example: 1f0f6a4e-6a1f-4f8a-9f2a-5f6d1f0e4d11
-        acceptedAt:
-          type: string
-          format: date-time
-          example: '2026-05-01T10:00:00Z'
-
-    MachineStateResponse:
-      type: object
-      required:
-        - timestamp
-        - state
-        - telemetry
-      properties:
-        timestamp:
-          type: string
-          format: date-time
-          example: '2026-05-01T10:00:05Z'
-        state:
-          type: string
-          enum:
-            - idle
-            - running
-            - error
-          example: running
-        telemetry:
+          example: Incomplete telemetry segments were received
+        payload:
           $ref: '#/components/schemas/TelemetryPayload'
+
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        source:
+          type: string
+          enum: [validation, agent]
+        detail:
+          type: string

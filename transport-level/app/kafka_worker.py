@@ -2,6 +2,8 @@ import asyncio
 import base64
 import json
 import logging
+import time
+import httpx
 from datetime import datetime, timezone
 from typing import Dict, Any, Set
 
@@ -18,7 +20,7 @@ class TransportBrokerManager:
 
     def __init__(self) -> None:
         self.producer: AIOKafkaProducer | None = None
-        self.sse_clients: Set[asyncio.Queue] = set()
+        self.http_client: httpx.AsyncClient | None = None
         self.message_buffers: Dict[str, Dict[str, Any]] = {}
         self._tasks: list[asyncio.Task] = []
         self._running: bool = False
@@ -26,6 +28,7 @@ class TransportBrokerManager:
     async def start(self) -> None:
         """Инициализация издателя и запуск фоновых задач обработки."""
         self._running = True
+        self.http_client = httpx.AsyncClient()
         self.producer = AIOKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -47,6 +50,8 @@ class TransportBrokerManager:
 
         if self.producer:
             await self.producer.stop()
+        if self.http_client:
+            await self.http_client.aclose()
 
     async def enqueue_segment(self, segment_data: dict, message_key: str) -> None:
         """Отправка сегмента в топик Kafka с ключом партиционирования."""
@@ -59,25 +64,23 @@ class TransportBrokerManager:
             key=message_key.encode("utf-8"),
         )
 
-    def register_client(self) -> asyncio.Queue:
-        """Регистрация очереди нового SSE-подписчика."""
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        self.sse_clients.add(queue)
-        return queue
-
-    def unregister_client(self, queue: asyncio.Queue) -> None:
-        """Удаление очереди подписчика при разрыве соединения."""
-        self.sse_clients.discard(queue)
-
     async def _broadcast(self, message: dict) -> None:
-        """Рассылка сформированного сообщения всем активным SSE-клиентам."""
-        for queue in list(self.sse_clients):
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-            await queue.put(message)
+        """Отправка собранного состояния или ошибки на эндпоинт прикладного уровня."""
+        if not self.http_client:
+            return
+
+        try:
+            response = await self.http_client.post(
+                settings.app_telemetry_url,
+                json=message,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Не удалось отправить телеметрию на прикладной уровень (%s): %s",
+                settings.app_telemetry_url,
+                exc,
+            )
 
     async def _consume_loop(self) -> None:
         """Фоновое чтение сегментов из Kafka с автовосстановлением соединения."""
@@ -115,31 +118,43 @@ class TransportBrokerManager:
         if num > total:
             return
 
+        now_mono = time.monotonic()
+
+        if msg_id not in self.message_buffers and self.message_buffers:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for stale_id in list(self.message_buffers.keys()):
+                self.message_buffers.pop(stale_id, None)
+                error_msg = SseTelemetryMessage(
+                    timestamp=now_iso,
+                    error=True,
+                    reason="Incomplete telemetry segments were received",
+                )
+                await self._broadcast(error_msg.model_dump(exclude_none=True))
+
         if msg_id not in self.message_buffers:
             self.message_buffers[msg_id] = {
                 "total": total,
                 "segments": {},
-                "cycles_missing": 0,
+                "updated_at": now_mono,
             }
 
         buf = self.message_buffers[msg_id]
         buf["segments"][num] = payload
-        buf["cycles_missing"] = 0
+        buf["updated_at"] = now_mono
 
-        # Если все сегменты пакета получены — собираем и отправляем в SSE сразу
         if len(buf["segments"]) == total:
             self.message_buffers.pop(msg_id, None)
-            now = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(timezone.utc).isoformat()
             try:
                 payload_json = self._assemble_payload(buf["segments"])
                 outgoing = SseTelemetryMessage(
-                    timestamp=now,
+                    timestamp=now_iso,
                     error=False,
                     payload=payload_json,
                 )
             except Exception:
                 outgoing = SseTelemetryMessage(
-                    timestamp=now,
+                    timestamp=now_iso,
                     error=True,
                     reason="Ошибка декодирования полезных данных сегментов",
                 )
@@ -156,27 +171,26 @@ class TransportBrokerManager:
         return json.loads(combined_bytes.decode("utf-8"))
 
     async def _aggregation_loop(self) -> None:
-        """Периодическая проверка буферов на потерю сегментов по таймауту."""
+        """Быстрая проверка зависших неполных пакетов по таймауту."""
         while self._running:
             try:
                 await asyncio.sleep(settings.aggregation_interval_sec)
             except asyncio.CancelledError:
                 break
 
-            now = datetime.now(timezone.utc).isoformat()
+            now_mono = time.monotonic()
+            now_iso = datetime.now(timezone.utc).isoformat()
             expired_ids = []
 
             for msg_id, buf in list(self.message_buffers.items()):
-                if len(buf["segments"]) < buf["total"]:
-                    buf["cycles_missing"] += 1
-                    if buf["cycles_missing"] >= settings.max_missing_cycles:
-                        error_msg = SseTelemetryMessage(
-                            timestamp=now,
-                            error=True,
-                            reason="Incomplete telemetry segments were received",
-                        )
-                        await self._broadcast(error_msg.model_dump(exclude_none=True))
-                        expired_ids.append(msg_id)
+                if now_mono - buf["updated_at"] >= settings.segment_timeout_sec:
+                    error_msg = SseTelemetryMessage(
+                        timestamp=now_iso,
+                        error=True,
+                        reason="Incomplete telemetry segments were received",
+                    )
+                    await self._broadcast(error_msg.model_dump(exclude_none=True))
+                    expired_ids.append(msg_id)
 
             for msg_id in expired_ids:
                 self.message_buffers.pop(msg_id, None)

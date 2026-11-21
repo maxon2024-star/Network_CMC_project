@@ -14,7 +14,7 @@ const CMC_CHAT_NAME = 'Контроллер_Станка'
 function formatCommandError(err) {
   if (err?.response) {
     const status = err.response.status;
-    const detail = err.response.data?.detail;
+    const { source, detail } = err.response.data || {};
     let reason = '';
 
     if (Array.isArray(detail)) {
@@ -23,18 +23,20 @@ function formatCommandError(err) {
       reason = detail;
     }
 
+    if (source === 'validation') {
+      return reason || 'Ошибка синтаксиса или параметров команды';
+    }
+
     return reason
       ? `Агент не принял команду (код ${status}): ${reason}`
       : `Агент не принял команду (код ${status})`;
   }
 
-  // Нет ответа от агента (сетевая ошибка или таймаут)
   if (err?.request) {
-    return 'Агент не принял команду: нет ответа от сервера';
+    return 'Нет ответа от сервера прикладного уровня';
   }
 
-  // Локальная ошибка синтаксиса или выхода за пределы рабочей области
-  return err?.message || 'Ошибка синтаксиса или параметров команды';
+  return err?.message || 'Ошибка отправки команды';
 }
 
 export default function InputBar() {

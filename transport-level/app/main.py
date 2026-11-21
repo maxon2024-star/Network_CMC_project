@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
-from sse_starlette.sse import EventSourceResponse
 
 from app.config import settings
 from app.kafka_worker import broker_manager
@@ -78,38 +77,4 @@ async def receive_segment(segment: TransportSegment):
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
         content=body.model_dump(),
-    )
-
-
-@app.get("/api/v1/telemetry/stream")
-async def telemetry_stream(username: str = "operator"):
-    """Потоковая передача агрегированной телеметрии по протоколу SSE."""
-
-    async def event_generator():
-        queue = broker_manager.register_client()
-        try:
-            yield {
-                "event": "ping",
-                "data": json.dumps({"type": "ping"}),
-            }
-            while True:
-                try:
-                    message = await asyncio.wait_for(queue.get(), timeout=settings.ping_timeout)
-                    yield {
-                        "event": "telemetry",
-                        "data": json.dumps(message, ensure_ascii=False),
-                    }
-                except asyncio.TimeoutError:
-                    yield {
-                        "event": "ping",
-                        "data": json.dumps({"type": "ping"}),
-                    }
-        except asyncio.CancelledError:
-            raise
-        finally:
-            broker_manager.unregister_client(queue)
-
-    return EventSourceResponse(
-        event_generator(),
-        ping=10000,
     )

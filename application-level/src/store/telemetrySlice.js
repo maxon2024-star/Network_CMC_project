@@ -149,6 +149,7 @@ const telemetrySlice = createSlice({
         if (finished === true) {
           state.isExecuting = false;
           state.finished = true;
+          state.recentTelemetryResults = [];
           if (wasExecuting) {
             state.messages.push({
               id: createMessageId(),

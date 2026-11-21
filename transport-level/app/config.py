@@ -9,9 +9,9 @@ class Settings(BaseSettings):
     kafka_topic: str = "telemetry-segments"
     kafka_group_id: str = "transport-aggregator-group"
     loss_probability: float = 0.02
-    aggregation_interval_sec: int = 5
-    max_missing_cycles: int = 3
-    ping_timeout: float = 5.0
+    aggregation_interval_sec: float = 0.2
+    segment_timeout_sec: float = 0.5
+    app_telemetry_url: str = "http://host.docker.internal:3000/api/v1/telemetry"
 
     class Config:
         env_file = ".env"

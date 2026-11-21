@@ -19,9 +19,7 @@ export default function App() {
       return;
     }
 
-    const baseSseUrl =
-      import.meta.env.VITE_TRANSPORT_SSE_URL || '/api/v1/telemetry/stream';
-    const streamUrl = `${baseSseUrl}?username=${encodeURIComponent(operatorName)}`;
+    const streamUrl = `/api/v1/telemetry/stream?username=${encodeURIComponent(operatorName)}`;
 
     const eventSource = new EventSource(streamUrl);
 

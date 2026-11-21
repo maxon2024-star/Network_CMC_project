@@ -17,6 +17,9 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
       KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      APP_TELEMETRY_URL: ${APP_TELEMETRY_URL:-http://host.docker.internal:3000/api/v1/telemetry}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:29092 --list"]
       interval: 5s
